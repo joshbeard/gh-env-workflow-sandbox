@@ -1,6 +1,7 @@
-# GitHub Actions Workflow Test - Minimal
+# GitHub Actions Workflow Test for Previews
 
-A minimal GitHub Actions workflow system for testing PR comment automation, security controls, and argument passing. **Purpose: Test workflow mechanisms, not build anything complex.**
+A minimal GitHub Actions workflow system for testing PR comment automation,
+security controls, and argument passing.
 
 ## What This Tests
 
@@ -29,7 +30,7 @@ Use these in PR comments:
 
 ## Files
 
-- **`.github/workflows/preview.yml`** - The workflow (this is what we're testing!)
+- **`.github/workflows/preview.yml`** - The PR preview workflow
 - **`demo/generate-demo.sh`** - Minimal script that echoes back what it receives
 
 ## Local Testing
@@ -62,5 +63,3 @@ When you trigger the workflow, the logs will show:
 4. Results posted to PR
 5. Cleanup when PR closes
 ```
-
-This demonstrates the complete GitHub Actions pattern for PR-based automation while keeping the actual work minimal so you can focus on the **workflow mechanics**.
