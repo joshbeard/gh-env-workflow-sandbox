@@ -119,7 +119,7 @@ jobs:
           fi
 
       - name: Upload test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: workflow-test-pr-${{ env.PR_NUMBER }}
           path: demo/output/
@@ -211,7 +211,7 @@ jobs:
           fi
 
       - name: Upload manual test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: manual-test-${{ github.event.inputs.pr_number || 'manual' }}
           path: demo/output/
