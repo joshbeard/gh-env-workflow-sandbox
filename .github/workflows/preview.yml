@@ -38,37 +38,43 @@ jobs:
     steps:
       - name: Parse comment and check permissions
         id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_AUTH: ${{ github.event.comment.author_association }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "🔍 Comment: ${{ github.event.comment.body }}"
-          echo "👤 User: ${{ github.event.comment.user.login }}"
-          echo "🏷️  Permission: ${{ github.event.comment.author_association }}"
-          echo "📋 PR: ${{ github.event.issue.number }}"
+          echo "🔍 Comment: $COMMENT_BODY"
+          echo "👤 User: $COMMENT_USER"
+          echo "🏷️  Permission: $COMMENT_AUTH"
+          echo "📋 PR: $PR_NUMBER"
           echo ""
 
-          # Parse command
-          comment="${{ github.event.comment.body }}"
+          # Parse command safely using environment variable
           should_run="false"
           cleanup_only="false"
           custom_args=""
 
-          if [[ "$comment" == "/demo" ]]; then
+          if [[ "$COMMENT_BODY" == "/demo" ]]; then
             echo "✅ Basic test command"
             should_run="true"
-          elif [[ "$comment" == "/demo cleanup" ]]; then
+          elif [[ "$COMMENT_BODY" == "/demo cleanup" ]]; then
             echo "🧹 Cleanup command"
             cleanup_only="true"
-          elif [[ "$comment" =~ ^/demo[[:space:]].+ ]]; then
+          elif [[ "$COMMENT_BODY" =~ ^/demo[[:space:]].+ ]]; then
             echo "⚙️  Custom command with args"
             should_run="true"
-            custom_args=$(echo "$comment" | sed 's|^/demo[[:space:]]\+||')
+            # Safely extract args using parameter expansion
+            custom_args="${COMMENT_BODY#/demo }"
+            # Remove leading whitespace
+            custom_args="${custom_args#"${custom_args%%[![:space:]]*}"}"
             echo "📝 Args: $custom_args"
           else
             echo "❌ Unrecognized command"
           fi
 
           # Check permissions
-          auth="${{ github.event.comment.author_association }}"
-          if [[ "$auth" == "COLLABORATOR" || "$auth" == "MEMBER" || "$auth" == "OWNER" ]]; then
+          if [[ "$COMMENT_AUTH" == "COLLABORATOR" || "$COMMENT_AUTH" == "MEMBER" || "$COMMENT_AUTH" == "OWNER" ]]; then
             echo "✅ User authorized"
           else
             echo "🚫 User not authorized"
@@ -79,7 +85,7 @@ jobs:
           # Set outputs
           echo "should_run=$should_run" >> $GITHUB_OUTPUT
           echo "custom_args=$custom_args" >> $GITHUB_OUTPUT
-          echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
 
   test-workflow:
