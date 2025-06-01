@@ -1,5 +1,10 @@
 name: "GitHub Actions Workflow Test"
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 on:
   pull_request:
     types: [closed]  # Only for cleanup
