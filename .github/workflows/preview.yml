@@ -1,0 +1,218 @@
+name: "GitHub Actions Workflow Test"
+
+on:
+  pull_request:
+    types: [closed]  # Only for cleanup
+  issue_comment:
+    types: [created]  # For /demo commands
+  workflow_dispatch:  # Manual triggers
+    inputs:
+      pr_number:
+        description: 'PR number for manual test'
+        required: false
+        type: string
+      custom_args:
+        description: 'Custom arguments to test'
+        required: false
+        type: string
+
+jobs:
+  security-check:
+    name: "Parse Comment & Security Check"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '/demo')
+    environment: preview-pr
+    outputs:
+      should_run: ${{ steps.parse.outputs.should_run }}
+      custom_args: ${{ steps.parse.outputs.custom_args }}
+      pr_number: ${{ steps.parse.outputs.pr_number }}
+      cleanup_only: ${{ steps.parse.outputs.cleanup_only }}
+
+    steps:
+      - name: Parse comment and check permissions
+        id: parse
+        run: |
+          echo "🔍 Comment: ${{ github.event.comment.body }}"
+          echo "👤 User: ${{ github.event.comment.user.login }}"
+          echo "🏷️  Permission: ${{ github.event.comment.author_association }}"
+          echo "📋 PR: ${{ github.event.issue.number }}"
+          echo ""
+
+          # Parse command
+          comment="${{ github.event.comment.body }}"
+          should_run="false"
+          cleanup_only="false"
+          custom_args=""
+
+          if [[ "$comment" == "/demo" ]]; then
+            echo "✅ Basic test command"
+            should_run="true"
+          elif [[ "$comment" == "/demo cleanup" ]]; then
+            echo "🧹 Cleanup command"
+            cleanup_only="true"
+          elif [[ "$comment" =~ ^/demo[[:space:]].+ ]]; then
+            echo "⚙️  Custom command with args"
+            should_run="true"
+            custom_args=$(echo "$comment" | sed 's|^/demo[[:space:]]\+||')
+            echo "📝 Args: $custom_args"
+          else
+            echo "❌ Unrecognized command"
+          fi
+
+          # Check permissions
+          auth="${{ github.event.comment.author_association }}"
+          if [[ "$auth" == "COLLABORATOR" || "$auth" == "MEMBER" || "$auth" == "OWNER" ]]; then
+            echo "✅ User authorized"
+          else
+            echo "🚫 User not authorized"
+            should_run="false"
+            cleanup_only="false"
+          fi
+
+          # Set outputs
+          echo "should_run=$should_run" >> $GITHUB_OUTPUT
+          echo "custom_args=$custom_args" >> $GITHUB_OUTPUT
+          echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
+
+  test-workflow:
+    name: "Test Workflow Mechanisms"
+    runs-on: ubuntu-latest
+    needs: security-check
+    if: needs.security-check.outputs.should_run == 'true'
+    environment: preview-pr
+
+    env:
+      CUSTOM_ARGS: ${{ needs.security-check.outputs.custom_args }}
+      PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show context
+        run: |
+          echo "🌍 Workflow Context:"
+          echo "  Event: ${{ github.event_name }}"
+          echo "  Repository: ${{ github.repository }}"
+          echo "  Actor: ${{ github.actor }}"
+          echo "  SHA: ${{ github.sha }}"
+          echo "  PR: $PR_NUMBER"
+          echo "  Args: $CUSTOM_ARGS"
+          echo ""
+
+      - name: Run test script
+        working-directory: ./demo
+        env:
+          ENVIRONMENT_SECRET: ${{ secrets.ENVIRONMENT_SECRET }}
+        run: |
+          echo "🚀 Running workflow test script..."
+          echo ""
+
+          # Run script with parsed arguments
+          if [[ -n "$CUSTOM_ARGS" ]]; then
+            ./generate-demo.sh --output output $CUSTOM_ARGS
+          else
+            ./generate-demo.sh --output output
+          fi
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        with:
+          name: workflow-test-pr-${{ env.PR_NUMBER }}
+          path: demo/output/
+          retention-days: 7
+
+      - name: Comment results
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = ${{ env.PR_NUMBER }};
+            const customArgs = process.env.CUSTOM_ARGS || '(none)';
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            let body = `## 🔧 Workflow Test Completed\n\n`;
+            body += `**Status:** ✅ All mechanisms working\n`;
+            body += `**PR:** #${prNumber}\n`;
+            body += `**Arguments:** \`${customArgs}\`\n`;
+            body += `**Logs:** [View details](${runUrl})\n`;
+            body += `**Artifacts:** [Download test results](${runUrl})\n\n`;
+            body += `This test verified:\n`;
+            body += `- ✅ Comment parsing and argument extraction\n`;
+            body += `- ✅ User permission validation\n`;
+            body += `- ✅ Environment secret access\n`;
+            body += `- ✅ Job dependencies and outputs\n`;
+            body += `- ✅ Artifact generation and upload`;
+
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  cleanup:
+    name: "Test Cleanup"
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' && github.event.action == 'closed') ||
+      (needs.security-check.outputs.cleanup_only == 'true')
+    needs: [security-check]
+    environment: preview-pr
+
+    steps:
+      - name: Simulate cleanup
+        run: |
+          pr_num="${{ github.event.number || needs.security-check.outputs.pr_number }}"
+          echo "🧹 Testing cleanup for PR #${pr_num}"
+          echo "   Would clean up resources here"
+          echo "✅ Cleanup test completed"
+
+      - name: Comment cleanup
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = ${{ github.event.number }};
+            const body = `## 🧹 Cleanup Test\n\nTested automatic cleanup for PR #${prNumber}`;
+
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  manual-test:
+    name: "Manual Test"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: preview-pr
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run manual test
+        working-directory: ./demo
+        run: |
+          echo "🎮 Manual workflow test"
+          echo "PR: ${{ github.event.inputs.pr_number || 'manual' }}"
+          echo "Args: ${{ github.event.inputs.custom_args || 'none' }}"
+          echo ""
+
+          args="${{ github.event.inputs.custom_args }}"
+          if [[ -n "$args" ]]; then
+            ./generate-demo.sh --output output $args
+          else
+            ./generate-demo.sh --output output --test
+          fi
+
+      - name: Upload manual test results
+        uses: actions/upload-artifact@v3
+        with:
+          name: manual-test-${{ github.event.inputs.pr_number || 'manual' }}
+          path: demo/output/
+          retention-days: 7
