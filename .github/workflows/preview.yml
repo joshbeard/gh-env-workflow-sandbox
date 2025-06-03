@@ -34,8 +34,29 @@ jobs:
       custom_args: ${{ steps.parse.outputs.custom_args }}
       pr_number: ${{ steps.parse.outputs.pr_number }}
       cleanup_only: ${{ steps.parse.outputs.cleanup_only }}
+      pr_head_sha: ${{ steps.get-pr.outputs.pr_head_sha }}
 
     steps:
+      - name: Get PR details
+        id: get-pr
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ github.event.issue.number }}
+            });
+
+            console.log(`PR #${pr.data.number}: ${pr.data.title}`);
+            console.log(`Head SHA: ${pr.data.head.sha}`);
+            console.log(`Base: ${pr.data.base.ref} -> Head: ${pr.data.head.ref}`);
+
+            return {
+              pr_head_sha: pr.data.head.sha,
+              pr_head_ref: pr.data.head.ref
+            };
+
       - name: Parse comment and check permissions
         id: parse
         env:
@@ -48,6 +69,7 @@ jobs:
           echo "👤 User: $COMMENT_USER"
           echo "🏷️  Permission: $COMMENT_AUTH"
           echo "📋 PR: $PR_NUMBER"
+          echo "🔗 Head SHA: ${{ fromJson(steps.get-pr.outputs.result).pr_head_sha }}"
           echo ""
 
           # Parse command safely using environment variable
@@ -87,6 +109,7 @@ jobs:
           echo "custom_args=$custom_args" >> $GITHUB_OUTPUT
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
+          echo "pr_head_sha=${{ fromJson(steps.get-pr.outputs.result).pr_head_sha }}" >> $GITHUB_OUTPUT
 
   test-workflow:
     name: "Test Workflow Mechanisms"
@@ -98,8 +121,23 @@ jobs:
     env:
       CUSTOM_ARGS: ${{ needs.security-check.outputs.custom_args }}
       PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      PR_HEAD_SHA: ${{ needs.security-check.outputs.pr_head_sha }}
 
     steps:
+      - name: Create pending status check
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ env.PR_HEAD_SHA }}',
+              state: 'pending',
+              context: 'Preview Demo Test',
+              description: 'Running workflow test...',
+              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -111,10 +149,12 @@ jobs:
           echo "  Actor: ${{ github.actor }}"
           echo "  SHA: ${{ github.sha }}"
           echo "  PR: $PR_NUMBER"
+          echo "  PR Head SHA: $PR_HEAD_SHA"
           echo "  Args: $CUSTOM_ARGS"
           echo ""
 
       - name: Run test script
+        id: test-script
         working-directory: ./demo
         env:
           ENVIRONMENT_SECRET: ${{ secrets.ENVIRONMENT_SECRET }}
@@ -136,6 +176,37 @@ jobs:
           path: demo/output/
           retention-days: 7
 
+      - name: Create success status check
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const customArgs = process.env.CUSTOM_ARGS || '(none)';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ env.PR_HEAD_SHA }}',
+              state: 'success',
+              context: 'Preview Demo Test',
+              description: `✅ Test completed with args: ${customArgs}`,
+              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
+      - name: Create failure status check
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ env.PR_HEAD_SHA }}',
+              state: 'failure',
+              context: 'Preview Demo Test',
+              description: '❌ Test failed - check logs',
+              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            });
+
       - name: Comment results
         uses: actions/github-script@v6
         with:
@@ -155,7 +226,8 @@ jobs:
             body += `- ✅ User permission validation\n`;
             body += `- ✅ Environment secret access\n`;
             body += `- ✅ Job dependencies and outputs\n`;
-            body += `- ✅ Artifact generation and upload`;
+            body += `- ✅ Artifact generation and upload\n`;
+            body += `- ✅ PR status check integration`;
 
             await github.rest.issues.createComment({
               issue_number: prNumber,
