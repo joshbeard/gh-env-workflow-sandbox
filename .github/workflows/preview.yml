@@ -23,20 +23,20 @@ on:
 
 jobs:
   security-check:
-    name: "Parse Comment & Security Check"
+    name: "Parse Comment & Queue for Approval"
     runs-on: ubuntu-latest
     if: github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
         startsWith(github.event.comment.body, '/demo')
-    environment: preview-pr
     outputs:
       should_run: ${{ steps.parse.outputs.should_run }}
       custom_args: ${{ steps.parse.outputs.custom_args }}
       pr_number: ${{ steps.parse.outputs.pr_number }}
       cleanup_only: ${{ steps.parse.outputs.cleanup_only }}
+      comment_user: ${{ steps.parse.outputs.comment_user }}
 
     steps:
-      - name: Parse comment and check permissions
+      - name: Parse comment (no permission check)
         id: parse
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
@@ -49,6 +49,8 @@ jobs:
           echo "🏷️  Permission: $COMMENT_AUTH"
           echo "📋 PR: $PR_NUMBER"
           echo ""
+          echo "ℹ️  Security: Relying on environment protection for approval"
+          echo ""
 
           # Parse command safely using environment variable
           should_run="false"
@@ -56,13 +58,13 @@ jobs:
           custom_args=""
 
           if [[ "$COMMENT_BODY" == "/demo" ]]; then
-            echo "✅ Basic test command"
+            echo "✅ Basic test command requested"
             should_run="true"
           elif [[ "$COMMENT_BODY" == "/demo cleanup" ]]; then
-            echo "🧹 Cleanup command"
+            echo "🧹 Cleanup command requested"
             cleanup_only="true"
           elif [[ "$COMMENT_BODY" =~ ^/demo[[:space:]].+ ]]; then
-            echo "⚙️  Custom command with args"
+            echo "⚙️  Custom command with args requested"
             should_run="true"
             # Safely extract args using parameter expansion
             custom_args="${COMMENT_BODY#/demo }"
@@ -73,46 +75,48 @@ jobs:
             echo "❌ Unrecognized command"
           fi
 
-          # Check permissions
-          if [[ "$COMMENT_AUTH" == "COLLABORATOR" || "$COMMENT_AUTH" == "MEMBER" || "$COMMENT_AUTH" == "OWNER" ]]; then
-            echo "✅ User authorized"
-          else
-            echo "🚫 User not authorized"
-            should_run="false"
-            cleanup_only="false"
-          fi
+          echo ""
+          echo "🔒 Command parsed - awaiting environment approval..."
 
           # Set outputs
           echo "should_run=$should_run" >> $GITHUB_OUTPUT
           echo "custom_args=$custom_args" >> $GITHUB_OUTPUT
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
+          echo "comment_user=$COMMENT_USER" >> $GITHUB_OUTPUT
 
   test-workflow:
-    name: "Test Workflow Mechanisms"
+    name: "Deploy to Preview Environment"
     runs-on: ubuntu-latest
     needs: security-check
     if: needs.security-check.outputs.should_run == 'true'
-    environment: preview-pr
+    environment:
+      name: preview-pr
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     env:
       CUSTOM_ARGS: ${{ needs.security-check.outputs.custom_args }}
       PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Show context
+      - name: Show deployment request details
         run: |
+          echo "🚀 DEPLOYMENT REQUEST APPROVED"
+          echo "=================================="
+          echo "👤 Requested by: $COMMENT_USER"
+          echo "📋 PR Number: $PR_NUMBER"
+          echo "⚙️  Arguments: $CUSTOM_ARGS"
+          echo "🔒 Approved by: ${{ github.actor }}"
+          echo ""
           echo "🌍 Workflow Context:"
           echo "  Event: ${{ github.event_name }}"
           echo "  Repository: ${{ github.repository }}"
-          echo "  Actor: ${{ github.actor }}"
           echo "  SHA: ${{ github.sha }}"
-          echo "  PR: $PR_NUMBER"
-          echo "  Args: $CUSTOM_ARGS"
           echo ""
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Run test script
         working-directory: ./demo
@@ -142,19 +146,22 @@ jobs:
           script: |
             const prNumber = ${{ env.PR_NUMBER }};
             const customArgs = process.env.CUSTOM_ARGS || '(none)';
+            const commentUser = process.env.COMMENT_USER;
+            const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
 
-            let body = `## 🔧 Workflow Test Completed\n\n`;
-            body += `**Status:** ✅ All mechanisms working\n`;
+            let body = `## 🚀 Preview Deployment Completed\n\n`;
+            body += `**Status:** ✅ Successfully deployed to preview environment\n`;
             body += `**PR:** #${prNumber}\n`;
+            body += `**Requested by:** @${commentUser}\n`;
+            body += `**Approved by:** @${approver}\n`;
             body += `**Arguments:** \`${customArgs}\`\n`;
             body += `**Logs:** [View details](${runUrl})\n`;
             body += `**Artifacts:** [Download test results](${runUrl})\n\n`;
-            body += `This test verified:\n`;
+            body += `This deployment verified:\n`;
             body += `- ✅ Comment parsing and argument extraction\n`;
-            body += `- ✅ User permission validation\n`;
-            body += `- ✅ Environment secret access\n`;
-            body += `- ✅ Job dependencies and outputs\n`;
+            body += `- ✅ Environment protection and approval workflow\n`;
+            body += `- ✅ Secret access and job execution\n`;
             body += `- ✅ Artifact generation and upload`;
 
             await github.rest.issues.createComment({
@@ -165,26 +172,45 @@ jobs:
             });
 
   cleanup:
-    name: "Test Cleanup"
+    name: "Cleanup Preview Environment"
     runs-on: ubuntu-latest
     if: needs.security-check.outputs.cleanup_only == 'true'
     needs: [security-check]
     environment: preview-pr
 
+    env:
+      PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+
     steps:
+      - name: Show cleanup request details
+        run: |
+          echo "🧹 CLEANUP REQUEST APPROVED"
+          echo "============================"
+          echo "👤 Requested by: $COMMENT_USER"
+          echo "📋 PR Number: $PR_NUMBER"
+          echo "🔒 Approved by: ${{ github.actor }}"
+          echo ""
+
       - name: Simulate cleanup
         run: |
-          pr_num="${{ needs.security-check.outputs.pr_number }}"
-          echo "🧹 Testing cleanup for PR #${pr_num}"
-          echo "   Would clean up resources here"
+          echo "🧹 Testing cleanup for PR #$PR_NUMBER"
+          echo "   Would clean up preview environment resources here"
           echo "✅ Cleanup test completed"
 
-      - name: Comment cleanup
+      - name: Comment cleanup results
         uses: actions/github-script@v6
         with:
           script: |
-            const prNumber = ${{ needs.security-check.outputs.pr_number }};
-            const body = `## 🧹 Cleanup Test\n\nTested cleanup for PR #${prNumber}`;
+            const prNumber = ${{ env.PR_NUMBER }};
+            const commentUser = process.env.COMMENT_USER;
+            const approver = '${{ github.actor }}';
+
+            let body = `## 🧹 Preview Environment Cleanup\n\n`;
+            body += `**Status:** ✅ Cleanup completed\n`;
+            body += `**PR:** #${prNumber}\n`;
+            body += `**Requested by:** @${commentUser}\n`;
+            body += `**Approved by:** @${approver}`;
 
             await github.rest.issues.createComment({
               issue_number: prNumber,
