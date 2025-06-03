@@ -32,6 +32,7 @@ jobs:
       pr_number: ${{ steps.parse.outputs.pr_number }}
       cleanup_only: ${{ steps.parse.outputs.cleanup_only }}
       comment_user: ${{ steps.parse.outputs.comment_user }}
+      status_comment_id: ${{ steps.create-comment.outputs.comment_id }}
 
     steps:
       - name: Parse comment (no permission check)
@@ -74,7 +75,7 @@ jobs:
           fi
 
           echo ""
-          echo "🔒 Command parsed - awaiting environment approval..."
+          echo "🔒 Command parsed - creating status comment..."
 
           # Set outputs
           echo "should_run=$should_run" >> $GITHUB_OUTPUT
@@ -82,6 +83,64 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
           echo "comment_user=$COMMENT_USER" >> $GITHUB_OUTPUT
+
+      - name: Create initial status comment
+        id: create-comment
+        if: steps.parse.outputs.should_run == 'true' || steps.parse.outputs.cleanup_only == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = ${{ steps.parse.outputs.pr_number }};
+            const commentUser = '${{ steps.parse.outputs.comment_user }}';
+            const customArgs = '${{ steps.parse.outputs.custom_args }}' || '';
+            const isCleanup = '${{ steps.parse.outputs.cleanup_only }}' === 'true';
+            const command = isCleanup ? '/demo cleanup' : customArgs ? `/demo ${customArgs}` : '/demo';
+
+            const body = `## ${isCleanup ? '🧹' : '🚀'} ${isCleanup ? 'Cleanup' : 'Deployment'} Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Status:** 🔄 Queuing ${isCleanup ? 'cleanup' : 'deployment'} request...\n\n` +
+                        `---\n` +
+                        `*This comment will be updated with progress*`;
+
+            const { data: comment } = await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+            console.log(`Created status comment: ${comment.id}`);
+            return comment.id;
+
+      - name: Update comment for pending approval
+        if: steps.parse.outputs.should_run == 'true' || steps.parse.outputs.cleanup_only == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = ${{ steps.create-comment.outputs.result }};
+            const prNumber = ${{ steps.parse.outputs.pr_number }};
+            const commentUser = '${{ steps.parse.outputs.comment_user }}';
+            const customArgs = '${{ steps.parse.outputs.custom_args }}' || '';
+            const isCleanup = '${{ steps.parse.outputs.cleanup_only }}' === 'true';
+            const command = isCleanup ? '/demo cleanup' : customArgs ? `/demo ${customArgs}` : '/demo';
+
+            const body = `## ${isCleanup ? '🧹' : '🚀'} ${isCleanup ? 'Cleanup' : 'Deployment'} Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Status:** ⏳ Pending approval to \`preview-pr\` environment\n\n` +
+                        `🔒 Waiting for authorized reviewer to approve this ${isCleanup ? 'cleanup' : 'deployment'}...\n\n` +
+                        `---\n` +
+                        `*This comment will be updated with progress*`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: body
+            });
+
+            console.log(`Updated comment ${commentId} for pending approval`);
 
   test-workflow:
     name: "Deploy to Preview Environment"
@@ -96,8 +155,37 @@ jobs:
       CUSTOM_ARGS: ${{ needs.security-check.outputs.custom_args }}
       PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
       COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+      STATUS_COMMENT_ID: ${{ needs.security-check.outputs.status_comment_id }}
 
     steps:
+      - name: Update comment - deployment starting
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
+            const command = customArgs ? `/demo ${customArgs}` : '/demo';
+            const approver = '${{ github.actor }}';
+
+            const body = `## 🚀 Deployment Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** 🔄 Approved! Deploying to \`preview-pr\` environment...\n\n` +
+                        `⚡ Deployment is now running with full access to secrets\n\n` +
+                        `---\n` +
+                        `*This comment will be updated with progress*`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: body
+            });
+
+            console.log(`Updated comment ${commentId} - deployment starting`);
+
       - name: Show deployment request details
         run: |
           echo "🚀 DEPLOYMENT REQUEST APPROVED"
@@ -117,6 +205,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run test script
+        id: deployment
         working-directory: ./demo
         env:
           ENVIRONMENT_SECRET: ${{ secrets.ENVIRONMENT_SECRET }}
@@ -138,36 +227,79 @@ jobs:
           path: demo/output/
           retention-days: 7
 
-      - name: Comment results
+      - name: Update comment - deployment success
+        if: success()
         uses: actions/github-script@v6
         with:
           script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
             const prNumber = ${{ env.PR_NUMBER }};
-            const customArgs = process.env.CUSTOM_ARGS || '(none)';
-            const commentUser = process.env.COMMENT_USER;
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
+            const command = customArgs ? `/demo ${customArgs}` : '/demo';
             const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
 
-            let body = `## 🚀 Preview Deployment Completed\n\n`;
-            body += `**Status:** ✅ Successfully deployed to preview environment\n`;
-            body += `**PR:** #${prNumber}\n`;
-            body += `**Requested by:** @${commentUser}\n`;
-            body += `**Approved by:** @${approver}\n`;
-            body += `**Arguments:** \`${customArgs}\`\n`;
-            body += `**Logs:** [View details](${runUrl})\n`;
-            body += `**Artifacts:** [Download test results](${runUrl})\n\n`;
-            body += `This deployment verified:\n`;
-            body += `- ✅ Comment parsing and argument extraction\n`;
-            body += `- ✅ Environment protection and approval workflow\n`;
-            body += `- ✅ Secret access and job execution\n`;
-            body += `- ✅ Artifact generation and upload`;
+            const body = `## 🚀 Deployment Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** ✅ Successfully deployed to \`preview-pr\` environment\n\n` +
+                        `🎉 **Deployment Complete!**\n` +
+                        `- **Arguments:** \`${customArgs || '(default)'}\`\n` +
+                        `- **Logs:** [View workflow details](${runUrl})\n` +
+                        `- **Artifacts:** [Download results](${runUrl})\n\n` +
+                        `**Verification completed:**\n` +
+                        `✅ Comment parsing and argument extraction\n` +
+                        `✅ Environment protection and approval workflow\n` +
+                        `✅ Secret access and job execution\n` +
+                        `✅ Artifact generation and upload\n\n` +
+                        `---\n` +
+                        `*Deployment completed successfully*`;
 
-            await github.rest.issues.createComment({
-              issue_number: prNumber,
+            await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
+              comment_id: commentId,
               body: body
             });
+
+            console.log(`Updated comment ${commentId} - deployment success`);
+
+      - name: Update comment - deployment failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const prNumber = ${{ env.PR_NUMBER }};
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
+            const command = customArgs ? `/demo ${customArgs}` : '/demo';
+            const approver = '${{ github.actor }}';
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const body = `## 🚀 Deployment Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** ❌ Deployment failed\n\n` +
+                        `🚨 **Deployment Error**\n` +
+                        `The deployment encountered an error during execution.\n\n` +
+                        `- **Arguments:** \`${customArgs || '(default)'}\`\n` +
+                        `- **Error Logs:** [View workflow details](${runUrl})\n` +
+                        `- **Debug Info:** Check the workflow logs for detailed error information\n\n` +
+                        `---\n` +
+                        `*Deployment failed - check logs for details*`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: body
+            });
+
+            console.log(`Updated comment ${commentId} - deployment failure`);
 
   cleanup:
     name: "Cleanup Preview Environment"
@@ -179,8 +311,35 @@ jobs:
     env:
       PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
       COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+      STATUS_COMMENT_ID: ${{ needs.security-check.outputs.status_comment_id }}
 
     steps:
+      - name: Update comment - cleanup starting
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const approver = '${{ github.actor }}';
+
+            const body = `## 🧹 Cleanup Status\n\n` +
+                        `**Command:** \`/demo cleanup\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** 🔄 Approved! Cleaning up \`preview-pr\` environment...\n\n` +
+                        `⚡ Cleanup is now running with full access to environment\n\n` +
+                        `---\n` +
+                        `*This comment will be updated with progress*`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: body
+            });
+
+            console.log(`Updated comment ${commentId} - cleanup starting`);
+
       - name: Show cleanup request details
         run: |
           echo "🧹 CLEANUP REQUEST APPROVED"
@@ -191,31 +350,78 @@ jobs:
           echo ""
 
       - name: Simulate cleanup
+        id: cleanup
         run: |
           echo "🧹 Testing cleanup for PR #$PR_NUMBER"
           echo "   Would clean up preview environment resources here"
           echo "✅ Cleanup test completed"
 
-      - name: Comment cleanup results
+      - name: Update comment - cleanup success
+        if: success()
         uses: actions/github-script@v6
         with:
           script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
             const prNumber = ${{ env.PR_NUMBER }};
-            const commentUser = process.env.COMMENT_USER;
+            const commentUser = '${{ env.COMMENT_USER }}';
             const approver = '${{ github.actor }}';
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
 
-            let body = `## 🧹 Preview Environment Cleanup\n\n`;
-            body += `**Status:** ✅ Cleanup completed\n`;
-            body += `**PR:** #${prNumber}\n`;
-            body += `**Requested by:** @${commentUser}\n`;
-            body += `**Approved by:** @${approver}`;
+            const body = `## 🧹 Cleanup Status\n\n` +
+                        `**Command:** \`/demo cleanup\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** ✅ Cleanup completed successfully\n\n` +
+                        `🎉 **Cleanup Complete!**\n` +
+                        `- **Environment:** \`preview-pr\` resources cleaned up\n` +
+                        `- **Logs:** [View workflow details](${runUrl})\n\n` +
+                        `**Cleanup verified:**\n` +
+                        `✅ Environment protection and approval workflow\n` +
+                        `✅ Resource cleanup simulation\n` +
+                        `✅ Cleanup process completion\n\n` +
+                        `---\n` +
+                        `*Cleanup completed successfully*`;
 
-            await github.rest.issues.createComment({
-              issue_number: prNumber,
+            await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
+              comment_id: commentId,
               body: body
             });
+
+            console.log(`Updated comment ${commentId} - cleanup success`);
+
+      - name: Update comment - cleanup failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const prNumber = ${{ env.PR_NUMBER }};
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const approver = '${{ github.actor }}';
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const body = `## 🧹 Cleanup Status\n\n` +
+                        `**Command:** \`/demo cleanup\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Approved by:** @${approver}\n` +
+                        `**Status:** ❌ Cleanup failed\n\n` +
+                        `🚨 **Cleanup Error**\n` +
+                        `The cleanup process encountered an error during execution.\n\n` +
+                        `- **Error Logs:** [View workflow details](${runUrl})\n` +
+                        `- **Debug Info:** Check the workflow logs for detailed error information\n\n` +
+                        `---\n` +
+                        `*Cleanup failed - check logs for details*`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: body
+            });
+
+            console.log(`Updated comment ${commentId} - cleanup failure`);
 
   manual-test:
     name: "Manual Test"
