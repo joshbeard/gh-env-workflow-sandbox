@@ -167,27 +167,24 @@ jobs:
   cleanup:
     name: "Test Cleanup"
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'pull_request' && github.event.action == 'closed') ||
-      (needs.security-check.outputs.cleanup_only == 'true')
+    if: needs.security-check.outputs.cleanup_only == 'true'
     needs: [security-check]
     environment: preview-pr
 
     steps:
       - name: Simulate cleanup
         run: |
-          pr_num="${{ github.event.number || needs.security-check.outputs.pr_number }}"
+          pr_num="${{ needs.security-check.outputs.pr_number }}"
           echo "🧹 Testing cleanup for PR #${pr_num}"
           echo "   Would clean up resources here"
           echo "✅ Cleanup test completed"
 
       - name: Comment cleanup
-        if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
         with:
           script: |
-            const prNumber = ${{ github.event.number }};
-            const body = `## 🧹 Cleanup Test\n\nTested automatic cleanup for PR #${prNumber}`;
+            const prNumber = ${{ needs.security-check.outputs.pr_number }};
+            const body = `## 🧹 Cleanup Test\n\nTested cleanup for PR #${prNumber}`;
 
             await github.rest.issues.createComment({
               issue_number: prNumber,
