@@ -111,6 +111,7 @@ jobs:
             });
 
             console.log(`Created status comment: ${comment.id}`);
+            core.setOutput('comment_id', comment.id);
             return comment.id;
 
       - name: Update comment for pending approval
@@ -124,6 +125,11 @@ jobs:
             const customArgs = '${{ steps.parse.outputs.custom_args }}' || '';
             const isCleanup = '${{ steps.parse.outputs.cleanup_only }}' === 'true';
             const command = isCleanup ? '/demo cleanup' : customArgs ? `/demo ${customArgs}` : '/demo';
+
+            if (!commentId) {
+              console.log('No comment ID available for pending approval update');
+              return;
+            }
 
             const body = `## ${isCleanup ? '🧹' : '🚀'} ${isCleanup ? 'Cleanup' : 'Deployment'} Status\n\n` +
                         `**Command:** \`${command}\`\n` +
@@ -162,11 +168,16 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const commentUser = '${{ env.COMMENT_USER }}';
             const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
             const command = customArgs ? `/demo ${customArgs}` : '/demo';
             const approver = '${{ github.actor }}';
+
+            if (!commentId) {
+              console.log('No comment ID available for deployment starting update');
+              return;
+            }
 
             const body = `## 🚀 Deployment Status\n\n` +
                         `**Command:** \`${command}\`\n` +
@@ -232,13 +243,18 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const prNumber = ${{ env.PR_NUMBER }};
             const commentUser = '${{ env.COMMENT_USER }}';
             const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
             const command = customArgs ? `/demo ${customArgs}` : '/demo';
             const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            if (!commentId) {
+              console.log('No comment ID available for deployment success update');
+              return;
+            }
 
             const body = `## 🚀 Deployment Status\n\n` +
                         `**Command:** \`${command}\`\n` +
@@ -271,13 +287,18 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const prNumber = ${{ env.PR_NUMBER }};
             const commentUser = '${{ env.COMMENT_USER }}';
             const customArgs = '${{ env.CUSTOM_ARGS }}' || '';
             const command = customArgs ? `/demo ${customArgs}` : '/demo';
             const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            if (!commentId) {
+              console.log('No comment ID available for deployment failure update');
+              return;
+            }
 
             const body = `## 🚀 Deployment Status\n\n` +
                         `**Command:** \`${command}\`\n` +
@@ -318,9 +339,14 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const commentUser = '${{ env.COMMENT_USER }}';
             const approver = '${{ github.actor }}';
+
+            if (!commentId) {
+              console.log('No comment ID available for cleanup starting update');
+              return;
+            }
 
             const body = `## 🧹 Cleanup Status\n\n` +
                         `**Command:** \`/demo cleanup\`\n` +
@@ -361,11 +387,16 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const prNumber = ${{ env.PR_NUMBER }};
             const commentUser = '${{ env.COMMENT_USER }}';
             const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            if (!commentId) {
+              console.log('No comment ID available for cleanup success update');
+              return;
+            }
 
             const body = `## 🧹 Cleanup Status\n\n` +
                         `**Command:** \`/demo cleanup\`\n` +
@@ -396,11 +427,16 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const commentId = ${{ env.STATUS_COMMENT_ID }};
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
             const prNumber = ${{ env.PR_NUMBER }};
             const commentUser = '${{ env.COMMENT_USER }}';
             const approver = '${{ github.actor }}';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            if (!commentId) {
+              console.log('No comment ID available for cleanup failure update');
+              return;
+            }
 
             const body = `## 🧹 Cleanup Status\n\n` +
                         `**Command:** \`/demo cleanup\`\n` +
