@@ -6,264 +6,161 @@ permissions:
   pull-requests: write
 
 on:
-  pull_request_target:
-    types: [opened, synchronize]  # For native PR integration
   issue_comment:
     types: [created]  # For /demo commands
-  workflow_dispatch:  # For triggered deployments
+  workflow_dispatch:  # Manual triggers
     inputs:
       pr_number:
-        description: 'PR number for deployment'
-        required: true
+        description: 'PR number for manual test'
+        required: false
         type: string
       custom_args:
-        description: 'Custom arguments to deploy'
+        description: 'Custom arguments to test'
         required: false
         type: string
-      comment_user:
-        description: 'User who requested deployment'
-        required: true
-        type: string
-      is_cleanup:
-        description: 'Whether this is a cleanup operation'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  comment-parser:
-    name: "Parse Comment & Trigger PR Workflow"
+  security-check:
+    name: "Parse Comment & Queue for Approval"
     runs-on: ubuntu-latest
     if: github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
         startsWith(github.event.comment.body, '/demo')
+    outputs:
+      should_run: ${{ steps.parse.outputs.should_run }}
+      custom_args: ${{ steps.parse.outputs.custom_args }}
+      pr_number: ${{ steps.parse.outputs.pr_number }}
+      cleanup_only: ${{ steps.parse.outputs.cleanup_only }}
+      comment_user: ${{ steps.parse.outputs.comment_user }}
 
     steps:
-      - name: Parse comment and trigger PR workflow
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const comment = context.payload.comment.body;
-            const commentUser = context.payload.comment.user.login;
-            const prNumber = context.payload.issue.number;
-
-            console.log(`🔍 Parsing comment: ${comment}`);
-            console.log(`👤 User: ${commentUser}`);
-            console.log(`📋 PR: ${prNumber}`);
-
-            let shouldTrigger = false;
-            let customArgs = '';
-            let isCleanup = false;
-
-            if (comment === '/demo') {
-              console.log('✅ Basic deployment command');
-              shouldTrigger = true;
-            } else if (comment === '/demo cleanup') {
-              console.log('🧹 Cleanup command');
-              shouldTrigger = true;
-              isCleanup = true;
-            } else if (comment.match(/^\/demo\s+.+/)) {
-              console.log('⚙️ Custom deployment command');
-              shouldTrigger = true;
-              customArgs = comment.replace(/^\/demo\s+/, '');
-              console.log(`📝 Args: ${customArgs}`);
-            } else {
-              console.log('❌ Unrecognized command');
-            }
-
-            if (shouldTrigger) {
-              console.log('🚀 Triggering PR deployment workflow...');
-
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'preview.yml',
-                ref: context.repo.default_branch,
-                inputs: {
-                  pr_number: prNumber.toString(),
-                  custom_args: customArgs,
-                  comment_user: commentUser,
-                  is_cleanup: isCleanup.toString()
-                }
-              });
-
-              // Post acknowledgment comment
-              await github.rest.issues.createComment({
-                issue_number: prNumber,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: `🔄 **Deployment Request Queued**\n\n` +
-                     `**Requested by:** @${commentUser}\n` +
-                     `**Command:** \`${comment}\`\n` +
-                     `**Status:** Awaiting approval in [preview-pr environment](https://github.com/${context.repo.owner}/${context.repo.repo}/actions)\n\n` +
-                     `The deployment will appear as a PR check once approved.`
-              });
-            }
-
-  pr-deployment:
-    name: "PR Preview Deployment"
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    environment:
-      name: preview-pr
-      url: https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}
-
-    steps:
-      - name: Get PR details
-        id: pr-info
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: ${{ github.event.inputs.pr_number }}
-            });
-
-            console.log(`📋 PR #${pr.number}: ${pr.title}`);
-            console.log(`🔗 Head SHA: ${pr.head.sha}`);
-            console.log(`🌿 Head Ref: ${pr.head.ref}`);
-
-            core.setOutput('head_sha', pr.head.sha);
-            core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('pr_title', pr.title);
-            return pr;
-
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.pr-info.outputs.head_sha }}
-
-      - name: Create pending status check
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const isCleanup = '${{ github.event.inputs.is_cleanup }}' === 'true';
-            const context_name = isCleanup ? 'Preview Cleanup' : 'Preview Deployment';
-
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ steps.pr-info.outputs.head_sha }}',
-              state: 'pending',
-              context: context_name,
-              description: 'Deployment approved, running...',
-              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
-
-      - name: Show deployment details
+      - name: Parse comment (no permission check)
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_AUTH: ${{ github.event.comment.author_association }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "🚀 PREVIEW DEPLOYMENT APPROVED"
-          echo "==============================="
-          echo "👤 Requested by: ${{ github.event.inputs.comment_user }}"
-          echo "🔒 Approved by: ${{ github.actor }}"
-          echo "📋 PR: #${{ github.event.inputs.pr_number }}"
-          echo "📝 Title: ${{ steps.pr-info.outputs.pr_title }}"
-          echo "🔗 Head SHA: ${{ steps.pr-info.outputs.head_sha }}"
-          echo "⚙️ Arguments: ${{ github.event.inputs.custom_args }}"
-          echo "🧹 Cleanup: ${{ github.event.inputs.is_cleanup }}"
+          echo "🔍 Comment: $COMMENT_BODY"
+          echo "👤 User: $COMMENT_USER"
+          echo "🏷️  Permission: $COMMENT_AUTH"
+          echo "📋 PR: $PR_NUMBER"
+          echo ""
+          echo "ℹ️  Security: Relying on environment protection for approval"
           echo ""
 
-      - name: Run deployment script
-        if: github.event.inputs.is_cleanup != 'true'
+          # Parse command safely using environment variable
+          should_run="false"
+          cleanup_only="false"
+          custom_args=""
+
+          if [[ "$COMMENT_BODY" == "/demo" ]]; then
+            echo "✅ Basic test command requested"
+            should_run="true"
+          elif [[ "$COMMENT_BODY" == "/demo cleanup" ]]; then
+            echo "🧹 Cleanup command requested"
+            cleanup_only="true"
+          elif [[ "$COMMENT_BODY" =~ ^/demo[[:space:]].+ ]]; then
+            echo "⚙️  Custom command with args requested"
+            should_run="true"
+            # Safely extract args using parameter expansion
+            custom_args="${COMMENT_BODY#/demo }"
+            # Remove leading whitespace
+            custom_args="${custom_args#"${custom_args%%[![:space:]]*}"}"
+            echo "📝 Args: $custom_args"
+          else
+            echo "❌ Unrecognized command"
+          fi
+
+          echo ""
+          echo "🔒 Command parsed - awaiting environment approval..."
+
+          # Set outputs
+          echo "should_run=$should_run" >> $GITHUB_OUTPUT
+          echo "custom_args=$custom_args" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "cleanup_only=$cleanup_only" >> $GITHUB_OUTPUT
+          echo "comment_user=$COMMENT_USER" >> $GITHUB_OUTPUT
+
+  test-workflow:
+    name: "Deploy to Preview Environment"
+    runs-on: ubuntu-latest
+    needs: security-check
+    if: needs.security-check.outputs.should_run == 'true'
+    environment:
+      name: preview-pr
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    env:
+      CUSTOM_ARGS: ${{ needs.security-check.outputs.custom_args }}
+      PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+
+    steps:
+      - name: Show deployment request details
+        run: |
+          echo "🚀 DEPLOYMENT REQUEST APPROVED"
+          echo "=================================="
+          echo "👤 Requested by: $COMMENT_USER"
+          echo "📋 PR Number: $PR_NUMBER"
+          echo "⚙️  Arguments: $CUSTOM_ARGS"
+          echo "🔒 Approved by: ${{ github.actor }}"
+          echo ""
+          echo "🌍 Workflow Context:"
+          echo "  Event: ${{ github.event_name }}"
+          echo "  Repository: ${{ github.repository }}"
+          echo "  SHA: ${{ github.sha }}"
+          echo ""
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run test script
         working-directory: ./demo
         env:
           ENVIRONMENT_SECRET: ${{ secrets.ENVIRONMENT_SECRET }}
         run: |
-          echo "🚀 Running deployment script..."
+          echo "🚀 Running workflow test script..."
           echo ""
 
           # Run script with parsed arguments
-          if [[ -n "${{ github.event.inputs.custom_args }}" ]]; then
-            ./generate-demo.sh --output output ${{ github.event.inputs.custom_args }}
+          if [[ -n "$CUSTOM_ARGS" ]]; then
+            ./generate-demo.sh --output output $CUSTOM_ARGS
           else
             ./generate-demo.sh --output output
           fi
 
-      - name: Run cleanup script
-        if: github.event.inputs.is_cleanup == 'true'
-        run: |
-          echo "🧹 Running cleanup for PR #${{ github.event.inputs.pr_number }}"
-          echo "   Would clean up preview environment resources here"
-          echo "✅ Cleanup completed"
-
-      - name: Upload artifacts
-        if: github.event.inputs.is_cleanup != 'true'
+      - name: Upload test results
         uses: actions/upload-artifact@v4
         with:
-          name: preview-pr-${{ github.event.inputs.pr_number }}
+          name: workflow-test-pr-${{ env.PR_NUMBER }}
           path: demo/output/
           retention-days: 7
 
-      - name: Create success status check
-        if: success()
+      - name: Comment results
         uses: actions/github-script@v6
         with:
           script: |
-            const isCleanup = '${{ github.event.inputs.is_cleanup }}' === 'true';
-            const context_name = isCleanup ? 'Preview Cleanup' : 'Preview Deployment';
-            const customArgs = '${{ github.event.inputs.custom_args }}' || '(default)';
-            const description = isCleanup ?
-              '✅ Cleanup completed' :
-              `✅ Deployed with args: ${customArgs}`;
-
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ steps.pr-info.outputs.head_sha }}',
-              state: 'success',
-              context: context_name,
-              description: description,
-              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
-
-      - name: Create failure status check
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const isCleanup = '${{ github.event.inputs.is_cleanup }}' === 'true';
-            const context_name = isCleanup ? 'Preview Cleanup' : 'Preview Deployment';
-
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: '${{ steps.pr-info.outputs.head_sha }}',
-              state: 'failure',
-              context: context_name,
-              description: '❌ Deployment failed - check logs',
-              target_url: `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
-            });
-
-      - name: Post results comment
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const prNumber = ${{ github.event.inputs.pr_number }};
-            const customArgs = '${{ github.event.inputs.custom_args }}' || '(default)';
-            const commentUser = '${{ github.event.inputs.comment_user }}';
+            const prNumber = ${{ env.PR_NUMBER }};
+            const customArgs = process.env.CUSTOM_ARGS || '(none)';
+            const commentUser = process.env.COMMENT_USER;
             const approver = '${{ github.actor }}';
-            const isCleanup = '${{ github.event.inputs.is_cleanup }}' === 'true';
             const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
-            const success = '${{ job.status }}' === 'success';
 
-            let body = isCleanup ?
-              `## 🧹 Preview Environment Cleanup\n\n` :
-              `## 🚀 Preview Deployment ${success ? 'Completed' : 'Failed'}\n\n`;
-
-            body += `**Status:** ${success ? '✅' : '❌'} ${isCleanup ? 'Cleanup' : 'Deployment'} ${success ? 'completed' : 'failed'}\n`;
+            let body = `## 🚀 Preview Deployment Completed\n\n`;
+            body += `**Status:** ✅ Successfully deployed to preview environment\n`;
             body += `**PR:** #${prNumber}\n`;
             body += `**Requested by:** @${commentUser}\n`;
             body += `**Approved by:** @${approver}\n`;
-            if (!isCleanup) {
-              body += `**Arguments:** \`${customArgs}\`\n`;
-            }
+            body += `**Arguments:** \`${customArgs}\`\n`;
             body += `**Logs:** [View details](${runUrl})\n`;
-            if (!isCleanup && success) {
-              body += `**Artifacts:** [Download results](${runUrl})\n`;
-            }
-            body += `\n📊 This deployment shows up as a native PR check above.`;
+            body += `**Artifacts:** [Download test results](${runUrl})\n\n`;
+            body += `This deployment verified:\n`;
+            body += `- ✅ Comment parsing and argument extraction\n`;
+            body += `- ✅ Environment protection and approval workflow\n`;
+            body += `- ✅ Secret access and job execution\n`;
+            body += `- ✅ Artifact generation and upload`;
 
             await github.rest.issues.createComment({
               issue_number: prNumber,
@@ -271,3 +168,83 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+  cleanup:
+    name: "Cleanup Preview Environment"
+    runs-on: ubuntu-latest
+    if: needs.security-check.outputs.cleanup_only == 'true'
+    needs: [security-check]
+    environment: preview-pr
+
+    env:
+      PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+
+    steps:
+      - name: Show cleanup request details
+        run: |
+          echo "🧹 CLEANUP REQUEST APPROVED"
+          echo "============================"
+          echo "👤 Requested by: $COMMENT_USER"
+          echo "📋 PR Number: $PR_NUMBER"
+          echo "🔒 Approved by: ${{ github.actor }}"
+          echo ""
+
+      - name: Simulate cleanup
+        run: |
+          echo "🧹 Testing cleanup for PR #$PR_NUMBER"
+          echo "   Would clean up preview environment resources here"
+          echo "✅ Cleanup test completed"
+
+      - name: Comment cleanup results
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = ${{ env.PR_NUMBER }};
+            const commentUser = process.env.COMMENT_USER;
+            const approver = '${{ github.actor }}';
+
+            let body = `## 🧹 Preview Environment Cleanup\n\n`;
+            body += `**Status:** ✅ Cleanup completed\n`;
+            body += `**PR:** #${prNumber}\n`;
+            body += `**Requested by:** @${commentUser}\n`;
+            body += `**Approved by:** @${approver}`;
+
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  manual-test:
+    name: "Manual Test"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: preview-pr
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run manual test
+        working-directory: ./demo
+        run: |
+          echo "🎮 Manual workflow test"
+          echo "PR: ${{ github.event.inputs.pr_number || 'manual' }}"
+          echo "Args: ${{ github.event.inputs.custom_args || 'none' }}"
+          echo ""
+
+          args="${{ github.event.inputs.custom_args }}"
+          if [[ -n "$args" ]]; then
+            ./generate-demo.sh --output output $args
+          else
+            ./generate-demo.sh --output output --test
+          fi
+
+      - name: Upload manual test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-test-${{ github.event.inputs.pr_number || 'manual' }}
+          path: demo/output/
+          retention-days: 7
