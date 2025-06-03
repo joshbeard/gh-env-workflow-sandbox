@@ -454,3 +454,66 @@ jobs:
           name: manual-test-${{ github.event.inputs.pr_number || 'manual' }}
           path: demo/output/
           retention-days: 7
+
+  completion:
+    name: "Update Final Status"
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'issue_comment'
+    needs: [security-check, test-workflow, cleanup]
+
+    env:
+      STATUS_COMMENT_ID: ${{ needs.security-check.outputs.status_comment_id }}
+      PR_NUMBER: ${{ needs.security-check.outputs.pr_number }}
+      COMMENT_USER: ${{ needs.security-check.outputs.comment_user }}
+      IS_CLEANUP: ${{ needs.security-check.outputs.cleanup_only }}
+
+    steps:
+      - name: Update comment for cancelled/rejected deployment
+        if: needs.security-check.outputs.status_comment_id != '' && (needs.test-workflow.result == 'cancelled' || needs.cleanup.result == 'cancelled')
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentId = '${{ env.STATUS_COMMENT_ID }}';
+            const commentUser = '${{ env.COMMENT_USER }}';
+            const isCleanup = '${{ env.IS_CLEANUP }}' === 'true';
+            const customArgs = '${{ needs.security-check.outputs.custom_args }}' || '';
+            const command = isCleanup ? '/demo cleanup' : customArgs ? `/demo ${customArgs}` : '/demo';
+
+            if (!commentId) {
+              console.log('No comment ID available');
+              return;
+            }
+
+            const body = `## ${isCleanup ? '🧹' : '🚀'} ${isCleanup ? 'Cleanup' : 'Deployment'} Status\n\n` +
+                        `**Command:** \`${command}\`\n` +
+                        `**Requested by:** @${commentUser}\n` +
+                        `**Status:** ❌ ${isCleanup ? 'Cleanup' : 'Deployment'} cancelled or rejected\n\n` +
+                        `🚫 **${isCleanup ? 'Cleanup' : 'Deployment'} Not Approved**\n` +
+                        `The ${isCleanup ? 'cleanup' : 'deployment'} was either:\n` +
+                        `- Rejected by an authorized reviewer\n` +
+                        `- Cancelled before approval\n` +
+                        `- Timed out waiting for approval\n\n` +
+                        `To retry, post the command again in a new comment.\n\n` +
+                        `---\n` +
+                        `*${isCleanup ? 'Cleanup' : 'Deployment'} was not executed*`;
+
+            try {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+                body: body
+              });
+              console.log(`Updated comment ${commentId} for cancelled ${isCleanup ? 'cleanup' : 'deployment'}`);
+            } catch (error) {
+              console.error(`Failed to update comment: ${error.message}`);
+            }
+
+      - name: Log completion status
+        run: |
+          echo "🏁 Workflow completion status:"
+          echo "  Security Check: ${{ needs.security-check.result }}"
+          echo "  Test Workflow: ${{ needs.test-workflow.result }}"
+          echo "  Cleanup: ${{ needs.cleanup.result }}"
+          echo "  Comment ID: ${{ env.STATUS_COMMENT_ID }}"
+          echo "  Is Cleanup: ${{ env.IS_CLEANUP }}"
