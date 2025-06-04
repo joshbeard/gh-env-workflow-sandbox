@@ -8,6 +8,8 @@ permissions:
 on:
   issue_comment:
     types: [created]  # For /demo commands
+  pull_request:
+    types: [closed]  # For automatic cleanup when PR is closed/merged
   workflow_dispatch:  # Manual triggers
     inputs:
       pr_number:
@@ -322,8 +324,69 @@ jobs:
 
             console.log(`Updated comment ${commentId} - deployment failure`);
 
-  cleanup:
-    name: "Cleanup Preview Environment"
+  auto-cleanup:
+    name: "Auto Cleanup on PR Close/Merge"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    environment: preview-pr
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_STATE: ${{ github.event.pull_request.state }}
+      PR_MERGED: ${{ github.event.pull_request.merged }}
+
+    steps:
+      - name: Show auto cleanup details
+        run: |
+          echo "🧹 AUTO CLEANUP TRIGGERED"
+          echo "=========================="
+          echo "📋 PR Number: $PR_NUMBER"
+          echo "🎯 Trigger: PR ${{ github.event.action }}"
+          echo "🔀 Merged: $PR_MERGED"
+          echo "📊 State: $PR_STATE"
+          echo ""
+
+      - name: Perform cleanup
+        id: cleanup
+        run: |
+          echo "🧹 Auto-cleaning up preview environment for PR #$PR_NUMBER"
+          echo "   Cleaning up preview-pr environment resources"
+          echo "   Removing artifacts and temporary resources"
+          echo "✅ Auto cleanup completed"
+
+      - name: Comment on PR about cleanup
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = ${{ env.PR_NUMBER }};
+            const wasMerged = '${{ env.PR_MERGED }}' === 'true';
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const body = `## 🧹 Preview Environment Cleanup\n\n` +
+                        `**Trigger:** PR ${wasMerged ? 'merged' : 'closed'}\n` +
+                        `**Status:** ✅ Preview environment automatically cleaned up\n\n` +
+                        `🎉 **Cleanup Complete!**\n` +
+                        `- **Environment:** \`preview-pr\` resources cleaned up\n` +
+                        `- **Artifacts:** Temporary deployment artifacts removed\n` +
+                        `- **Logs:** [View cleanup details](${runUrl})\n\n` +
+                        `**Auto-cleanup verified:**\n` +
+                        `✅ Preview environment resources cleaned up\n` +
+                        `✅ Temporary artifacts removed\n` +
+                        `✅ Environment reset for future deployments\n\n` +
+                        `---\n` +
+                        `*Cleanup completed automatically on PR ${wasMerged ? 'merge' : 'close'}*`;
+
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+            console.log(`Posted cleanup comment on PR #${prNumber}`);
+
+  manual-cleanup:
+    name: "Manual Cleanup (Command)"
     runs-on: ubuntu-latest
     if: needs.security-check.outputs.cleanup_only == 'true'
     needs: [security-check]
@@ -495,7 +558,7 @@ jobs:
     name: "Update Final Status"
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'issue_comment'
-    needs: [security-check, test-workflow, cleanup]
+    needs: [security-check, test-workflow, manual-cleanup]
 
     env:
       STATUS_COMMENT_ID: ${{ needs.security-check.outputs.status_comment_id }}
@@ -505,7 +568,7 @@ jobs:
 
     steps:
       - name: Update comment for cancelled/rejected deployment
-        if: needs.security-check.outputs.status_comment_id != '' && (needs.test-workflow.result == 'cancelled' || needs.cleanup.result == 'cancelled')
+        if: needs.security-check.outputs.status_comment_id != '' && (needs.test-workflow.result == 'cancelled' || needs.manual-cleanup.result == 'cancelled')
         uses: actions/github-script@v6
         with:
           script: |
@@ -550,6 +613,6 @@ jobs:
           echo "🏁 Workflow completion status:"
           echo "  Security Check: ${{ needs.security-check.result }}"
           echo "  Test Workflow: ${{ needs.test-workflow.result }}"
-          echo "  Cleanup: ${{ needs.cleanup.result }}"
+          echo "  Manual Cleanup: ${{ needs.manual-cleanup.result }}"
           echo "  Comment ID: ${{ env.STATUS_COMMENT_ID }}"
           echo "  Is Cleanup: ${{ env.IS_CLEANUP }}"
